@@ -6,6 +6,7 @@ from agno.agent import Agent
 from agno.models.groq import Groq
 from dotenv import load_dotenv
 import re
+from streamlit_mic_recorder import speech_to_text # NEW: Import speech_to_text
 
 load_dotenv()
 
@@ -43,13 +44,16 @@ if 'active_quiz_section' not in st.session_state:
 if 'quiz_current_grade' not in st.session_state:
     st.session_state.quiz_current_grade = {}
 
-# NEW: Overall grading system
 if 'overall_total_correct' not in st.session_state:
     st.session_state.overall_total_correct = 0
 if 'overall_total_attempted' not in st.session_state:
     st.session_state.overall_total_attempted = 0
 if 'overall_grade' not in st.session_state:
     st.session_state.overall_grade = "N/A"
+
+# NEW: State for voice input
+if 'voice_input_subject' not in st.session_state:
+    st.session_state.voice_input_subject = ""
 
 MAX_QUIZ_QUESTIONS = 10
 
@@ -277,7 +281,28 @@ def check_answer_and_adjust_difficulty(section_name, user_selected_option, curre
     st.rerun()
 
 st.markdown("<h2 style='text-align: center;'>Generate Full Study Curriculum</h2>", unsafe_allow_html=True)
-main_study_subject = st.text_input("Enter a main study subject (e.g., 'Java Programming', 'World History'):", key="main_subject_input")
+
+# NEW: Voice input for main study subject
+col1, col2 = st.columns([3, 1])
+with col1:
+    main_study_subject = st.text_input(
+        "Enter a main study subject (e.g., 'Java Programming', 'World History'):", 
+        key="main_subject_input",
+        value=st.session_state.voice_input_subject # Initialize with voice input if available
+    )
+with col2:
+    st.write("Or speak it:")
+    # The speech_to_text component will set st.session_state.voice_subject_stt_output
+    voice_transcript = speech_to_text(
+        start_prompt="Start recording",
+        stop_prompt="Stop recording",
+        just_once=True, # We only need one transcription
+        use_container_width=True,
+        key='voice_subject_stt'
+    )
+    if voice_transcript:
+        st.session_state.voice_input_subject = voice_transcript # Update the text input with voice transcript
+        st.rerun() # Rerun to update the text input value immediately
 
 if st.button("Generate Curriculum", key="generate_curriculum_btn"):
     if main_study_subject:
@@ -407,7 +432,6 @@ for i, section_data in enumerate(st.session_state.sections):
             else:
                 st.warning(f"Please add some topics to section '{section_name}' before starting an adaptive quiz.")
             st.session_state[f'quiz_loading_{section_id_key}'] = False
-            calculate_overall_grade()
             st.rerun()
 
         st.markdown("<h4>Topics:</h4>", unsafe_allow_html=True)
