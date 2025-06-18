@@ -9,6 +9,7 @@ import re
 from streamlit_mic_recorder import speech_to_text
 from gtts import gTTS
 import tempfile
+import io # Added for BytesIO
 
 load_dotenv()
 
@@ -45,6 +46,10 @@ if 'active_quiz_section' not in st.session_state:
     st.session_state.active_quiz_section = None
 if 'quiz_current_grade' not in st.session_state:
     st.session_state.quiz_current_grade = {}
+# NEW: State to lock quiz options
+if 'quiz_options_locked' not in st.session_state:
+    st.session_state.quiz_options_locked = {}
+
 
 if 'overall_total_correct' not in st.session_state:
     st.session_state.overall_total_correct = 0
@@ -268,6 +273,7 @@ def check_answer_and_adjust_difficulty(section_name, user_selected_option, curre
         feedback_message = "Please select an answer before checking."
 
     st.session_state.quiz_question_feedback[section_name] = feedback_message
+    st.session_state.quiz_options_locked[section_name] = True # Lock options after checking
 
     if is_correct:
         st.session_state.quiz_difficulty_state[section_name]['difficulty_hint'] = "harder"
@@ -284,33 +290,20 @@ def check_answer_and_adjust_difficulty(section_name, user_selected_option, curre
 
     st.rerun()
 
-# Function to convert text to speech and play
 def text_to_speech_and_play(text, key_id):
-    tts_file_path = st.session_state.tts_audio_files.get(key_id)
-    
-    # Check if file already exists for this text and key_id, if so, reuse
-    if tts_file_path and os.path.exists(tts_file_path):
-        audio_bytes = open(tts_file_path, "rb").read()
-        # Removed 'key' argument
-        st.audio(audio_bytes, format="audio/mp3", loop=False, autoplay=True)
-        return
-
     with st.spinner("Generating audio..."):
         try:
             tts = gTTS(text=text, lang='en')
-            # Create a temporary file to save the audio
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
-                tts_file_path = fp.name
-                tts.save(tts_file_path)
             
-            st.session_state.tts_audio_files[key_id] = tts_file_path
-            
-            audio_bytes = open(tts_file_path, "rb").read()
-            # Removed 'key' argument
-            st.audio(audio_bytes, format="audio/mp3", loop=False, autoplay=True)
+            audio_bytes_io = io.BytesIO()
+            tts.write_to_fp(audio_bytes_io)
+            audio_bytes_io.seek(0)
+
+            st.audio(audio_bytes_io.getvalue(), format="audio/mp3", loop=False, autoplay=True)
             st.success("Audio generated and playing!")
         except Exception as e:
             st.error(f"Error generating audio: {e}")
+
 
 st.markdown("<h2 style='text-align: center;'>Generate Full Study Curriculum</h2>", unsafe_allow_html=True)
 
@@ -430,6 +423,9 @@ for i, section_data in enumerate(st.session_state.sections):
             st.session_state.quiz_question_count[section_name] = 0
         if section_name not in st.session_state.quiz_current_grade:
             st.session_state.quiz_current_grade[section_name] = "N/A"
+        # Initialize quiz_options_locked for this section
+        if section_name not in st.session_state.quiz_options_locked:
+            st.session_state.quiz_options_locked[section_name] = False
 
 
         if st.button(f"Start Adaptive Quiz for '{section_name}'", key=f"start_quiz_btn_{section_id_key}"):
@@ -444,6 +440,7 @@ for i, section_data in enumerate(st.session_state.sections):
                 st.session_state.quiz_question_count[section_name] = 0
                 st.session_state.quiz_current_grade[section_name] = "N/A"
                 st.session_state.active_quiz_section = section_name
+                st.session_state.quiz_options_locked[section_name] = False # Unlock options for new quiz
 
                 if topics_in_section:
                     new_question_markdown = generate_adaptive_quiz_question(
@@ -511,15 +508,19 @@ for i, section_data in enumerate(st.session_state.sections):
 
                 st.markdown(f"**Question:** {current_q_data['question']}")
 
+                # Only allow selection if options are not locked
                 user_selected_option = st.radio(
                     "Select your answer:",
                     options=current_q_data['options'],
                     key=f"adaptive_quiz_q_radio_{section_id_key}",
-                    index=None
+                    index=None,
+                    disabled=st.session_state.quiz_options_locked[section_name] # Disable when locked
                 )
                 
-                if st.button("Check Answer", key=f"check_answer_btn_{section_id_key}"):
-                    check_answer_and_adjust_difficulty(section_name, user_selected_option, current_q_data)
+                # Only show check answer button if options are not locked
+                if not st.session_state.quiz_options_locked[section_name]:
+                    if st.button("Check Answer", key=f"check_answer_btn_{section_id_key}"):
+                        check_answer_and_adjust_difficulty(section_name, user_selected_option, current_q_data)
 
                 if st.session_state.quiz_question_feedback.get(section_name):
                     st.markdown(st.session_state.quiz_question_feedback[section_name], unsafe_allow_html=True)
@@ -529,26 +530,29 @@ for i, section_data in enumerate(st.session_state.sections):
                     else:
                         next_button_label = "Finish Quiz"
 
-                    if st.button(next_button_label, key=f"next_adaptive_q_btn_{section_id_key}"):
-                        st.session_state.quiz_question_feedback[section_name] = ""
-                        
-                        if st.session_state.quiz_question_count[section_name] < MAX_QUIZ_QUESTIONS:
-                            new_question_markdown = generate_adaptive_quiz_question(
-                                section_name,
-                                topics_in_section,
-                                st.session_state.quiz_difficulty_state[section_name]['difficulty_hint']
-                            )
-                            st.session_state.quiz_output[section_name] = new_question_markdown
-                            st.session_state.current_quiz_question_data[section_name] = parse_single_quiz_question_markdown(new_question_markdown)
-                            if new_question_markdown:
-                                st.session_state.quiz_question_count[section_name] += 1
-                            calculate_overall_grade()
-                            st.rerun()
-                        else:
-                            st.session_state.quiz_submitted[section_name] = True
-                            st.session_state.active_quiz_section = None
-                            calculate_overall_grade()
-                            st.rerun()
+                    # Only show next/finish button after an answer has been checked (options are locked)
+                    if st.session_state.quiz_options_locked[section_name]:
+                        if st.button(next_button_label, key=f"next_adaptive_q_btn_{section_id_key}"):
+                            st.session_state.quiz_question_feedback[section_name] = ""
+                            st.session_state.quiz_options_locked[section_name] = False # Unlock for next question
+                            
+                            if st.session_state.quiz_question_count[section_name] < MAX_QUIZ_QUESTIONS:
+                                new_question_markdown = generate_adaptive_quiz_question(
+                                    section_name,
+                                    topics_in_section,
+                                    st.session_state.quiz_difficulty_state[section_name]['difficulty_hint']
+                                )
+                                st.session_state.quiz_output[section_name] = new_question_markdown
+                                st.session_state.current_quiz_question_data[section_name] = parse_single_quiz_question_markdown(new_question_markdown)
+                                if new_question_markdown:
+                                    st.session_state.quiz_question_count[section_name] += 1
+                                calculate_overall_grade()
+                                st.rerun()
+                            else:
+                                st.session_state.quiz_submitted[section_name] = True
+                                st.session_state.active_quiz_section = None
+                                calculate_overall_grade()
+                                st.rerun()
             else:
                 st.info("No current question. Click 'Start Adaptive Quiz' above to begin.")
         elif st.session_state.quiz_submitted.get(section_name):
@@ -570,5 +574,6 @@ for i, section_data in enumerate(st.session_state.sections):
                 st.session_state.quiz_difficulty_state[section_name]['difficulty_hint'] = "normal"
                 st.session_state.quiz_current_grade[section_name] = "N/A"
                 st.session_state.active_quiz_section = None
+                st.session_state.quiz_options_locked[section_name] = False
                 calculate_overall_grade()
                 st.rerun()
