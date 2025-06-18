@@ -6,7 +6,9 @@ from agno.agent import Agent
 from agno.models.groq import Groq
 from dotenv import load_dotenv
 import re
-from streamlit_mic_recorder import speech_to_text # NEW: Import speech_to_text
+from streamlit_mic_recorder import speech_to_text
+from gtts import gTTS
+import tempfile
 
 load_dotenv()
 
@@ -51,9 +53,11 @@ if 'overall_total_attempted' not in st.session_state:
 if 'overall_grade' not in st.session_state:
     st.session_state.overall_grade = "N/A"
 
-# NEW: State for voice input
 if 'voice_input_subject' not in st.session_state:
     st.session_state.voice_input_subject = ""
+
+if 'tts_audio_files' not in st.session_state:
+    st.session_state.tts_audio_files = {}
 
 MAX_QUIZ_QUESTIONS = 10
 
@@ -280,29 +284,55 @@ def check_answer_and_adjust_difficulty(section_name, user_selected_option, curre
 
     st.rerun()
 
+# Function to convert text to speech and play
+def text_to_speech_and_play(text, key_id):
+    tts_file_path = st.session_state.tts_audio_files.get(key_id)
+    
+    # Check if file already exists for this text and key_id, if so, reuse
+    if tts_file_path and os.path.exists(tts_file_path):
+        audio_bytes = open(tts_file_path, "rb").read()
+        # Removed 'key' argument
+        st.audio(audio_bytes, format="audio/mp3", loop=False, autoplay=True)
+        return
+
+    with st.spinner("Generating audio..."):
+        try:
+            tts = gTTS(text=text, lang='en')
+            # Create a temporary file to save the audio
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
+                tts_file_path = fp.name
+                tts.save(tts_file_path)
+            
+            st.session_state.tts_audio_files[key_id] = tts_file_path
+            
+            audio_bytes = open(tts_file_path, "rb").read()
+            # Removed 'key' argument
+            st.audio(audio_bytes, format="audio/mp3", loop=False, autoplay=True)
+            st.success("Audio generated and playing!")
+        except Exception as e:
+            st.error(f"Error generating audio: {e}")
+
 st.markdown("<h2 style='text-align: center;'>Generate Full Study Curriculum</h2>", unsafe_allow_html=True)
 
-# NEW: Voice input for main study subject
 col1, col2 = st.columns([3, 1])
 with col1:
     main_study_subject = st.text_input(
         "Enter a main study subject (e.g., 'Java Programming', 'World History'):", 
         key="main_subject_input",
-        value=st.session_state.voice_input_subject # Initialize with voice input if available
+        value=st.session_state.voice_input_subject 
     )
 with col2:
     st.write("Or speak it:")
-    # The speech_to_text component will set st.session_state.voice_subject_stt_output
     voice_transcript = speech_to_text(
         start_prompt="Start recording",
         stop_prompt="Stop recording",
-        just_once=True, # We only need one transcription
+        just_once=True,
         use_container_width=True,
         key='voice_subject_stt'
     )
     if voice_transcript:
-        st.session_state.voice_input_subject = voice_transcript # Update the text input with voice transcript
-        st.rerun() # Rerun to update the text input value immediately
+        st.session_state.voice_input_subject = voice_transcript
+        st.rerun()
 
 if st.button("Generate Curriculum", key="generate_curriculum_btn"):
     if main_study_subject:
@@ -442,17 +472,31 @@ for i, section_data in enumerate(st.session_state.sections):
             topic_id_key = f"{section_id_key}_{topic_name.replace(' ', '_').replace(':', '').replace('/', '').replace('.', '').replace('-', '_')}_{j}"
 
             with st.expander(f"Topic: {topic_name}", expanded=False):
-                if st.button(f"Generate Study Map for '{topic_name}'", key=f"study_map_btn_{topic_id_key}"):
-                    st.session_state[f'study_map_loading_{topic_id_key}'] = True
-                    with st.spinner(f"Generating study map for topic: {topic_name}..."):
-                        try:
-                            study_map_response = study_map_agent.run(f"Generate a study map for the topic: '{topic_name}'")
-                            st.session_state.study_map_output[topic_id_key] = study_map_response.content
-                        except Exception as e:
-                            st.error(f"Error generating study map for topic '{topic_name}': {e}")
-                        st.session_state[f'study_map_loading_{topic_id_key}'] = False
+                col_study_map_btn, col_tts_btn = st.columns([0.7, 0.3])
+                
+                with col_study_map_btn:
+                    if st.button(f"Generate Study Map for '{topic_name}'", key=f"study_map_btn_{topic_id_key}"):
+                        st.session_state[f'study_map_loading_{topic_id_key}'] = True
+                        with st.spinner(f"Generating study map for topic: {topic_name}..."):
+                            try:
+                                study_map_response = study_map_agent.run(f"Generate a study map for the topic: '{topic_name}'")
+                                st.session_state.study_map_output[topic_id_key] = study_map_response.content
+                            except Exception as e:
+                                st.error(f"Error generating study map for topic '{topic_name}': {e}")
+                            st.session_state[f'study_map_loading_{topic_id_key}'] = False
 
                 if topic_id_key in st.session_state.study_map_output:
+                    with col_tts_btn:
+                        if st.button("🔊 Read Aloud", key=f"tts_btn_{topic_id_key}"):
+                            tts_text = st.session_state.study_map_output[topic_id_key]
+                            # Clean up markdown for better TTS pronunciation
+                            tts_text = re.sub(r'##\s*', '', tts_text)
+                            tts_text = re.sub(r'\*\*(.*?)\*\*', r'\1', tts_text)
+                            tts_text = re.sub(r'\*', '', tts_text)
+                            tts_text = re.sub(r'\(Terms:.*?\)', '', tts_text)
+
+                            text_to_speech_and_play(tts_text, topic_id_key)
+
                     st.markdown("---")
                     st.markdown(f"**Study Map for {topic_name}:**")
                     st.markdown(st.session_state.study_map_output[topic_id_key], unsafe_allow_html=True)
