@@ -38,6 +38,18 @@ if 'quiz_total_attempted' not in st.session_state:
     st.session_state.quiz_total_attempted = {}
 if 'quiz_question_count' not in st.session_state:
     st.session_state.quiz_question_count = {}
+if 'active_quiz_section' not in st.session_state:
+    st.session_state.active_quiz_section = None
+if 'quiz_current_grade' not in st.session_state:
+    st.session_state.quiz_current_grade = {}
+
+# NEW: Overall grading system
+if 'overall_total_correct' not in st.session_state:
+    st.session_state.overall_total_correct = 0
+if 'overall_total_attempted' not in st.session_state:
+    st.session_state.overall_total_attempted = 0
+if 'overall_grade' not in st.session_state:
+    st.session_state.overall_grade = "N/A"
 
 MAX_QUIZ_QUESTIONS = 10
 
@@ -132,15 +144,14 @@ quiz_generation_agent = get_quiz_generation_agent()
 curriculum_agent = get_curriculum_agent()
 
 def parse_single_quiz_question_markdown(markdown_text):
-    # Regex to find question, options, correct answer, and explanation
     match = re.search(
-        r'^(?:### Question \d+:)?\s*(.*?)\n'  # Optional Question header, then Question text (Group 1)
-        r'([A-D]\).*?)\n' # Option A (Group 2)
-        r'([A-D]\).*?)\n' # Option B (Group 3)
-        r'([A-D]\).*?)\n' # Option C (Group 4)
-        r'([A-D]\).*?)\n' # Option D (Group 5)
-        r'Correct Answer: ([A-D]\) .*?)\n' # Correct Answer (Group 6)
-        r'Explanation: (.*)$', # Explanation (Group 7)
+        r'^(?:### Question \d+:)?\s*(.*?)\n'
+        r'([A-D]\).*?)\n'
+        r'([A-D]\).*?)\n'
+        r'([A-D]\).*?)\n'
+        r'([A-D]\).*?)\n'
+        r'Correct Answer: ([A-D]\) .*?)\n'
+        r'Explanation: (.*)$',
         markdown_text, re.DOTALL | re.MULTILINE
     )
 
@@ -219,6 +230,13 @@ def generate_adaptive_quiz_question(section_name, all_topics_in_section, difficu
             st.error(f"Error generating adaptive quiz question: {e}")
             return None
 
+def calculate_overall_grade():
+    if st.session_state.overall_total_attempted > 0:
+        overall_grade_val = (st.session_state.overall_total_correct / st.session_state.overall_total_attempted) * 100
+        st.session_state.overall_grade = f"{overall_grade_val:.1f}%"
+    else:
+        st.session_state.overall_grade = "N/A"
+
 def check_answer_and_adjust_difficulty(section_name, user_selected_option, current_q_data):
     is_correct = False
     feedback_message = ""
@@ -231,20 +249,30 @@ def check_answer_and_adjust_difficulty(section_name, user_selected_option, curre
                 is_correct = True
                 feedback_message = f"**Correct!** {current_q_data['explanation']}"
                 st.session_state.quiz_total_correct[section_name] += 1
+                st.session_state.overall_total_correct += 1
             else:
                 feedback_message = f"**Incorrect.** The correct answer was **{current_q_data['correct_answer_full']}**. {current_q_data['explanation']}"
+            st.session_state.quiz_total_attempted[section_name] += 1
+            st.session_state.overall_total_attempted += 1
         else:
             feedback_message = "Error: Question data missing for evaluation."
     else:
         feedback_message = "Please select an answer before checking."
 
-    st.session_state.quiz_total_attempted[section_name] += 1
     st.session_state.quiz_question_feedback[section_name] = feedback_message
 
     if is_correct:
         st.session_state.quiz_difficulty_state[section_name]['difficulty_hint'] = "harder"
     else:
         st.session_state.quiz_difficulty_state[section_name]['difficulty_hint'] = "easier"
+
+    if st.session_state.quiz_total_attempted[section_name] > 0:
+        grade = (st.session_state.quiz_total_correct[section_name] / st.session_state.quiz_total_attempted[section_name]) * 100
+        st.session_state.quiz_current_grade[section_name] = f"{grade:.1f}%"
+    else:
+        st.session_state.quiz_current_grade[section_name] = "N/A"
+    
+    calculate_overall_grade()
 
     st.rerun()
 
@@ -275,6 +303,15 @@ if st.button("Generate Curriculum", key="generate_curriculum_btn"):
 
 st.markdown("---")
 
+with st.sidebar:
+    st.header("Overall Performance")
+    overall_grade_display = st.session_state.overall_grade
+    st.markdown(f"**Overall Grade:** <span style='font-size: 2em; font-weight: bold;'>{overall_grade_display}</span>", unsafe_allow_html=True)
+    st.markdown(f"**Total Correct:** {st.session_state.overall_total_correct}")
+    st.markdown(f"**Total Attempted:** {st.session_state.overall_total_attempted}")
+    st.info("This grade reflects your performance across all adaptive quizzes.")
+
+st.sidebar.markdown("---")
 st.sidebar.header("Manage Study Content (Manual)")
 new_section_name = st.sidebar.text_input("New Section Name", key="new_section_input")
 if st.sidebar.button("Add New Section", key="add_section_btn"):
@@ -336,6 +373,8 @@ for i, section_data in enumerate(st.session_state.sections):
             st.session_state.quiz_total_attempted[section_name] = 0
         if section_name not in st.session_state.quiz_question_count:
             st.session_state.quiz_question_count[section_name] = 0
+        if section_name not in st.session_state.quiz_current_grade:
+            st.session_state.quiz_current_grade[section_name] = "N/A"
 
 
         if st.button(f"Start Adaptive Quiz for '{section_name}'", key=f"start_quiz_btn_{section_id_key}"):
@@ -348,6 +387,8 @@ for i, section_data in enumerate(st.session_state.sections):
                 st.session_state.quiz_difficulty_state[section_name]['current_topic_index'] = 0
                 st.session_state.quiz_difficulty_state[section_name]['difficulty_hint'] = "normal"
                 st.session_state.quiz_question_count[section_name] = 0
+                st.session_state.quiz_current_grade[section_name] = "N/A"
+                st.session_state.active_quiz_section = section_name
 
                 if topics_in_section:
                     new_question_markdown = generate_adaptive_quiz_question(
@@ -356,7 +397,7 @@ for i, section_data in enumerate(st.session_state.sections):
                         st.session_state.quiz_difficulty_state[section_name]['difficulty_hint']
                     )
                     st.session_state.quiz_output[section_name] = new_question_markdown
-                    st.session_state.current_quiz_question_data[section_name] = parse_single_quiz_question_markdown(new_question_markdown) # Store parsed data
+                    st.session_state.current_quiz_question_data[section_name] = parse_single_quiz_question_markdown(new_question_markdown)
                     if new_question_markdown:
                         st.session_state.quiz_question_count[section_name] += 1
                 else:
@@ -366,6 +407,8 @@ for i, section_data in enumerate(st.session_state.sections):
             else:
                 st.warning(f"Please add some topics to section '{section_name}' before starting an adaptive quiz.")
             st.session_state[f'quiz_loading_{section_id_key}'] = False
+            calculate_overall_grade()
+            st.rerun()
 
         st.markdown("<h4>Topics:</h4>", unsafe_allow_html=True)
         if not topics_in_section:
@@ -390,13 +433,12 @@ for i, section_data in enumerate(st.session_state.sections):
                     st.markdown(f"**Study Map for {topic_name}:**")
                     st.markdown(st.session_state.study_map_output[topic_id_key], unsafe_allow_html=True)
 
-        if section_name in st.session_state.quiz_output and not st.session_state.quiz_submitted[section_name]:
+        if st.session_state.active_quiz_section == section_name and not st.session_state.quiz_submitted[section_name]:
             current_q_data = st.session_state.current_quiz_question_data.get(section_name)
 
             if current_q_data:
                 st.markdown("---")
                 st.markdown(f"**Question {st.session_state.quiz_question_count[section_name]} of {MAX_QUIZ_QUESTIONS}**")
-                st.markdown(f"**Current Score:** {st.session_state.quiz_total_correct[section_name]} / {st.session_state.quiz_total_attempted[section_name]}")
                 st.markdown(f"**Current Topic:** {st.session_state.quiz_difficulty_state[section_name]['current_topic']}")
 
                 st.markdown(f"**Question:** {current_q_data['question']}")
@@ -432,15 +474,20 @@ for i, section_data in enumerate(st.session_state.sections):
                             st.session_state.current_quiz_question_data[section_name] = parse_single_quiz_question_markdown(new_question_markdown)
                             if new_question_markdown:
                                 st.session_state.quiz_question_count[section_name] += 1
+                            calculate_overall_grade()
                             st.rerun()
                         else:
                             st.session_state.quiz_submitted[section_name] = True
+                            st.session_state.active_quiz_section = None
+                            calculate_overall_grade()
                             st.rerun()
             else:
-                st.info("Click 'Start Adaptive Quiz' to begin.")
-        elif section_name in st.session_state.quiz_output and st.session_state.quiz_submitted[section_name]:
+                st.info("No current question. Click 'Start Adaptive Quiz' above to begin.")
+        elif st.session_state.quiz_submitted.get(section_name):
             st.success(f"Adaptive Quiz Session for '{section_name}' Completed!")
-            st.markdown(f"**Final Score:** {st.session_state.quiz_total_correct[section_name]} / {st.session_state.quiz_total_attempted[section_name]}")
+            final_grade = st.session_state.quiz_current_grade.get(section_name, "N/A")
+            st.markdown(f"**Final Score for this quiz:** {st.session_state.quiz_total_correct[section_name]} / {st.session_state.quiz_total_attempted[section_name]}")
+            st.markdown(f"**Final Grade for this quiz:** <span style='font-size: 1.5em; font-weight: bold;'>{final_grade}</span>", unsafe_allow_html=True)
             st.info("You can restart the quiz to try again with new questions.")
 
             if st.button(f"Restart Adaptive Quiz for '{section_name}'", key=f"restart_adaptive_quiz_{section_id_key}"):
@@ -453,4 +500,7 @@ for i, section_data in enumerate(st.session_state.sections):
                 st.session_state.quiz_question_count[section_name] = 0
                 st.session_state.quiz_difficulty_state[section_name]['current_topic_index'] = 0
                 st.session_state.quiz_difficulty_state[section_name]['difficulty_hint'] = "normal"
+                st.session_state.quiz_current_grade[section_name] = "N/A"
+                st.session_state.active_quiz_section = None
+                calculate_overall_grade()
                 st.rerun()
